@@ -42,7 +42,7 @@ async function loadJson(filename: string) {
 
 function readWorkbook(filename: string, mustExist = true) {
   try {
-    return XLSX.readFile(filename, { dateNF: 'dd/mm/yyyy'});
+    return XLSX.readFile(filename, { dateNF: 'dd/mm/yyyy', cellNF: true, });
   } catch (e) {
     if (!mustExist && (e as { code: string }).code === 'ENOENT') {
       return undefined;
@@ -76,7 +76,22 @@ function transactionId(transaction: Transaction) {
 }
 
 function transactionToRow(transaction: Transaction) {
-  return [ transaction.Date, transaction.Amount, transaction.Description ];
+  return [
+    {
+      v: transaction.Date,
+      t: 'n',
+      z: 'm/d/yy'
+    },
+    {
+      v: transaction.Amount,
+      t: 'n',
+      z: '"$"#,##0.00;[Red]"$"#,##0.00'
+    },
+    {
+      v: transaction.Description,
+      t: 's'
+    }
+  ];
 }
 
 async function run(argv: Array<string>) {
@@ -115,6 +130,14 @@ async function run(argv: Array<string>) {
       header: TransactionHeader
     }) as Array<Transaction>;
 
+    sheetData.sort((a, b) => {
+      if (a.Date < b.Date) {
+        return -1;
+      } else if (a.Date > b.Date) {
+        return 1;
+      }
+      return 0;
+    });
     for (const transaction of sheetData) {
       if (!existingTransactions.has(transactionId(transaction))) {
         if (transaction.Amount < 0) {
