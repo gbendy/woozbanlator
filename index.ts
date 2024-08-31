@@ -1,14 +1,17 @@
 import * as XLSX from 'xlsx';
 import { readFile } from 'node:fs/promises';
+import { compile } from './expression-eval';
 
 type CategoryDefinition = {
   name: string;
-  match: string;
+  matches: Array<string>;
+  reimbursementFormula?: string;
 }
 
 type Config = {
   outputFilename: string;
-  categories: Record<string, CategoryDefinition>;
+  debitCategories: Record<string, CategoryDefinition>;
+  creditCategories: Record<string, CategoryDefinition>;
 }
 
 const TransactionHeader = [ 'Date', 'Amount', 'Description', 'Description2' ];
@@ -20,6 +23,12 @@ type Transaction = {
 
 type ExtendedTransaction = Transaction & {
   Category: string;
+  Reimbursed: string;
+}
+
+type Statistics = {
+  debitsAdded: number;
+  creditsAdded: number;
 }
 
 function fileError(e: unknown) {
@@ -62,8 +71,8 @@ function writeWorkbook(filename: string, workbook: XLSX.WorkBook) {
 
 function createWorkbook() {
   const workbook = XLSX.utils.book_new();
-  const debitSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Description']], { });
-  const creditSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Description']]);
+  const debitSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Reimbursed', 'Description']], { });
+  const creditSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Reimbursed', 'Description']]);
 
   XLSX.utils.book_append_sheet(workbook, debitSheet, 'Debit');
   XLSX.utils.book_append_sheet(workbook, creditSheet, 'Credit');
@@ -75,8 +84,17 @@ function transactionId(transaction: Transaction) {
   return transaction.Date.toString() + ':' + transaction.Amount.toString() + ':' + transaction.Description;
 }
 
-function transactionToRow(transaction: Transaction) {
-  return [
+function addExtendedTransaction(workSheet: XLSX.WorkSheet, transaction: ExtendedTransaction) {
+  const range = workSheet['!ref'];
+  const newRow = parseInt(range?.split(':')[1][1] as string) + 1;
+
+  const reimbursedAmount = compile(transaction.Reimbursed)({ amount: transaction.Amount });
+  const reimbursedForumula = transaction.Reimbursed.replace(/amount/g, `C${newRow}`);
+  const row = [
+    {
+      v: transaction.Category,
+      t: 's'
+    },
     {
       v: transaction.Date,
       t: 'n',
@@ -88,10 +106,32 @@ function transactionToRow(transaction: Transaction) {
       z: '"$"#,##0.00;[Red]"$"#,##0.00'
     },
     {
+      v: reimbursedAmount,
+      f: reimbursedForumula,
+      t: 'n',
+      z: '"$"#,##0.00;[Red]"$"#,##0.00'
+    },
+    {
       v: transaction.Description,
       t: 's'
     }
   ];
+  XLSX.utils.sheet_add_aoa(workSheet, [ row ], { origin: { r: -1, c: 0 } });
+}
+function processTransaction(workbook: XLSX.WorkBook, transaction: Transaction, statistics: Statistics) {
+  const extendedTransaction = { ...transaction } as ExtendedTransaction;
+  extendedTransaction.Category = 'Stuff';
+  extendedTransaction.Reimbursed = 'amount';
+
+  const workSheet = transaction.Amount < 0 ? workbook.Sheets['Debit'] : workbook.Sheets['Credit'];
+  addExtendedTransaction(workSheet, extendedTransaction);
+
+  if (transaction.Amount < 0) {
+    statistics.debitsAdded++;
+  } else {
+    statistics.creditsAdded++;
+  }
+
 }
 
 async function run(argv: Array<string>) {
@@ -104,8 +144,11 @@ async function run(argv: Array<string>) {
   if (!config.outputFilename) {
     fatalFileError('No outputFilename configured');
   }
-  if (!config.categories) {
-    config.categories = {};
+  if (!config.creditCategories) {
+    config.creditCategories = {};
+  }
+  if (!config.debitCategories) {
+    config.debitCategories = {};
   }
 
   const outputWorkbook = readWorkbook(config.outputFilename, false) ?? createWorkbook();
@@ -115,16 +158,25 @@ async function run(argv: Array<string>) {
 
   // make cache of existing entries
   const existingTransactions = new Set<string>();
+  const dateTransactions = new Map<number, Set<ExtendedTransaction>>();
   for (const sheetName of [ 'Debit', 'Credit' ]) {
     const sheetData = XLSX.utils.sheet_to_json(outputWorkbook.Sheets[sheetName], {
     }) as Array<ExtendedTransaction>;
     for (const transaction of sheetData) {
       existingTransactions.add(transactionId(transaction));
+      // also add to per date store
+      if (!dateTransactions.has(transaction.Date)) {
+        dateTransactions.set(transaction.Date, new Set<ExtendedTransaction>());
+      }
+      dateTransactions.get(transaction.Date)?.add(transaction);
     }
 
   }
-  let debitsAdded = 0;
-  let creditsAdded = 0;
+  const statistics = {
+    debitsAdded: 0,
+    creditsAdded: 0
+  };
+
   for (const workbook of files) {
     const sheetData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
       header: TransactionHeader
@@ -140,17 +192,11 @@ async function run(argv: Array<string>) {
     });
     for (const transaction of sheetData) {
       if (!existingTransactions.has(transactionId(transaction))) {
-        if (transaction.Amount < 0) {
-          XLSX.utils.sheet_add_aoa(outputWorkbook.Sheets['Debit'], [ transactionToRow(transaction) ], { origin: { r: -1, c: 1 } });
-          debitsAdded++;
-        } else {
-          XLSX.utils.sheet_add_aoa(outputWorkbook.Sheets['Credit'], [ transactionToRow(transaction) ], { origin: { r: -1, c: 1 } });
-          creditsAdded++;
-        }
+        processTransaction(outputWorkbook, transaction, statistics);
       }
     }
   }
-  if (debitsAdded || creditsAdded) {
+  if (statistics.debitsAdded || statistics.creditsAdded) {
     writeWorkbook(config.outputFilename, outputWorkbook);
   }
 }
