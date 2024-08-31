@@ -71,8 +71,8 @@ function writeWorkbook(filename: string, workbook: XLSX.WorkBook) {
 
 function createWorkbook() {
   const workbook = XLSX.utils.book_new();
-  const debitSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Reimbursed', 'Description']], { });
-  const creditSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Reimbursed', 'Description']]);
+  const debitSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Reimbursed', 'Paid', 'Description']], { });
+  const creditSheet = XLSX.utils.aoa_to_sheet([[ 'Category', 'Date', 'Amount', 'Description']]);
 
   XLSX.utils.book_append_sheet(workbook, debitSheet, 'Debit');
   XLSX.utils.book_append_sheet(workbook, creditSheet, 'Credit');
@@ -84,12 +84,16 @@ function transactionId(transaction: Transaction) {
   return transaction.Date.toString() + ':' + transaction.Amount.toString() + ':' + transaction.Description;
 }
 
-function addExtendedTransaction(workSheet: XLSX.WorkSheet, transaction: ExtendedTransaction) {
+function addExtendedDebit(workSheet: XLSX.WorkSheet, transaction: ExtendedTransaction, statistics: Statistics) {
   const range = workSheet['!ref'];
-  const newRow = parseInt(range?.split(':')[1][1] as string) + 1;
+  const newRow = parseInt(range?.split(':')[1].substring(1) as string) + 1;
 
-  const reimbursedAmount = compile(transaction.Reimbursed)({ amount: transaction.Amount });
-  const reimbursedForumula = transaction.Reimbursed.replace(/amount/g, `C${newRow}`);
+  const reimbursedValue = transaction.Reimbursed ? compile(transaction.Reimbursed)({ amount: transaction.Amount }) : undefined;
+  const reimbursedFormula = transaction.Reimbursed ? transaction.Reimbursed.replace(/amount/g, `C${newRow}`) : undefined;
+
+  const paidValue = transaction.Amount + (reimbursedValue ?? 0);
+  const paidFormula = `C${newRow}+D${newRow}`;
+
   const row = [
     {
       v: transaction.Category,
@@ -106,8 +110,14 @@ function addExtendedTransaction(workSheet: XLSX.WorkSheet, transaction: Extended
       z: '"$"#,##0.00;[Red]"$"#,##0.00'
     },
     {
-      v: reimbursedAmount,
-      f: reimbursedForumula,
+      v: reimbursedValue,
+      f: reimbursedFormula,
+      t: 'n',
+      z: '"$"#,##0.00;[Red]"$"#,##0.00'
+    },
+    {
+      v: paidValue,
+      f: paidFormula,
       t: 'n',
       z: '"$"#,##0.00;[Red]"$"#,##0.00'
     },
@@ -117,21 +127,45 @@ function addExtendedTransaction(workSheet: XLSX.WorkSheet, transaction: Extended
     }
   ];
   XLSX.utils.sheet_add_aoa(workSheet, [ row ], { origin: { r: -1, c: 0 } });
+  statistics.debitsAdded++;
 }
+
+
+function addExtendedCredit(workSheet: XLSX.WorkSheet, transaction: ExtendedTransaction, statistics: Statistics) {
+  const row = [
+    {
+      v: transaction.Category,
+      t: 's'
+    },
+    {
+      v: transaction.Date,
+      t: 'n',
+      z: 'm/d/yy'
+    },
+    {
+      v: transaction.Amount,
+      t: 'n',
+      z: '"$"#,##0.00;[Red]"$"#,##0.00'
+    },
+    {
+      v: transaction.Description,
+      t: 's'
+    }
+  ];
+  XLSX.utils.sheet_add_aoa(workSheet, [ row ], { origin: { r: -1, c: 0 } });
+  statistics.creditsAdded++;
+}
+
 function processTransaction(workbook: XLSX.WorkBook, transaction: Transaction, statistics: Statistics) {
   const extendedTransaction = { ...transaction } as ExtendedTransaction;
   extendedTransaction.Category = 'Stuff';
-  extendedTransaction.Reimbursed = 'amount';
-
-  const workSheet = transaction.Amount < 0 ? workbook.Sheets['Debit'] : workbook.Sheets['Credit'];
-  addExtendedTransaction(workSheet, extendedTransaction);
+  extendedTransaction.Reimbursed = '';
 
   if (transaction.Amount < 0) {
-    statistics.debitsAdded++;
+    addExtendedDebit(workbook.Sheets['Debit'], extendedTransaction, statistics);
   } else {
-    statistics.creditsAdded++;
+    addExtendedCredit(workbook.Sheets['Credit'], extendedTransaction, statistics);
   }
-
 }
 
 async function run(argv: Array<string>) {
