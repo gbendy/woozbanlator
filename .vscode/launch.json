@@ -15,6 +15,7 @@
       "args": [
         "CSVData(5).csv"
       ],
+      "console": "integratedTerminal",
       "preLaunchTask": "npm: build",
       "outFiles": [
         "${workspaceFolder}/**/*.js"
